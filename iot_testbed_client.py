@@ -945,6 +945,15 @@ if __name__ == '__main__':
     startGroup.add_argument('--now', action='store_true',
                             help="overwrite start_time fields with 'now'")
 
+    scheduleParser.add_argument('--hook', type=str,
+                                nargs='+',
+                                default=[],
+                                help="call the main function of this file at the end of the schedule operation")
+
+    scheduleParser.add_argument('--duration', type=int,
+                                default=None,
+                                help="overwrite the duration of the job (in seconds)")
+
     scheduleParser.add_argument('jobFile',
                                 help='the json file that decribe the job',
                                 nargs='+')
@@ -1150,10 +1159,31 @@ if __name__ == '__main__':
                 if args.now:
                     job.start_time = 'now'
 
+                if args.duration is not None:
+                    job.duration = args.duration
+
                 if len(errs) == 0:
                     print("Submit job to testbed")
                     result = tiot.schedule(job)
                     print(f"result: {result}")
+                    
+                    for hook in args.hook:
+                        hook = str(Path(hook).resolve())
+                        try:
+                            hook_module = None
+                            try:
+                                from importlib.machinery import SourceFileLoader
+                                # importing the add module from the calculator package using the path
+                                module_handle = SourceFileLoader("hook_module", hook).load_module()
+                            except NameError:
+                                print('Hook module not found')
+                            else:
+                                module_handle.hook(result)
+
+                        except Exception as e:
+                            print(e)
+                        except:
+                            pass
 
         elif args.command == 'cancel':
             for jid in args.jobId:

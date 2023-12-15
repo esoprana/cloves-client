@@ -12,6 +12,9 @@ from requests import Session
 from requests.compat import urljoin
 import shutil
 
+import humanize
+import dateutil.parser
+
 import unittest
 
 default_config = {
@@ -20,6 +23,86 @@ default_config = {
         "testbediot-disi-unitn-it-chain.pem")
 }
 
+import importlib.util
+HAS_HUMANIZE = (importlib.util.find_spec('humanize') is not None)
+
+HAS_COLORED = (importlib.util.find_spec('colored') is not None)
+
+if HAS_HUMANIZE:
+    import humanize
+
+    def formatDates(x):
+        begin = dateutil.parser.isoparse(x['begin'])
+        end = dateutil.parser.isoparse(x['end'])
+
+        formattedBeg = begin.isoformat()
+        formattedEnd = end.isoformat()
+        formattedDelta = None
+
+        HAS_HUMANIZE = False
+
+        if HAS_HUMANIZE is not None:
+            formattedBeg = humanize.naturaltime(begin)
+            formattedEnd = humanize.naturaltime(end)
+            formattedDelta = humanize.precisedelta(end - begin, minimum_unit='minutes', format='%.0f')
+
+        ownership = ''
+
+        if x['is_owner']:
+            ownership = x['desc'].replace('\n', ' ') + ' '
+
+        if (formattedBeg == formattedEnd) and (HAS_HUMANIZE):
+            return [ownership, 'From ', formattedBeg, 'for ', formattedDelta]
+        else:
+            return [ownership, 'From ', formattedBeg, 'to  ', formattedEnd]
+else:
+    def formatDates(x):
+        begin = dateutil.parser.isoparse(x['begin'])
+        end = dateutil.parser.isoparse(x['end'])
+
+        formattedBeg = begin.isoformat()
+        formattedEnd = end.isoformat()
+
+        ownership = ''
+
+        if x['is_owner']:
+            ownership = x['desc'].replace('\n', ' ') + ' '
+
+        return [ownership, 'From ', formattedBeg, 'to  ', formattedEnd]
+
+if HAS_COLORED:
+    from colored import Fore, Back, Style
+
+    def format_color(busy):
+        begColor = []
+        
+
+        begColor.append(Style.reset)
+
+        if dateutil.parser.isoparse(busy['end']) < datetime.now().astimezone():
+            if not (busy['is_owner'] and 'Completed' in busy['desc']):
+                begColor.append(Style.dim)
+
+        if busy['is_owner']:
+            begColor.append(Style.underline)
+
+            if 'Completed' in busy['desc']:
+                begColor.append(Fore.red)
+
+        return ''.join(begColor)
+else:
+    def format_color(busy):
+        return ''
+
+if HAS_HUMANIZE:
+    import humanize
+
+    def format_size(nBytes):
+        formatted_bytes = humanize.naturalsize(nBytes, False, False, '%.3f')
+        return f'{formatted_bytes} ({nBytes} bytes)'
+else:
+    def format_size(nBytes):
+        return f'{nBytes} bytes'
 
 class ApiError(ValueError):
     def __init__(self, contextMessage, code, message):
@@ -901,7 +984,7 @@ if __name__ == '__main__':
     )
     calendarParser.add_argument(
         '--begin', '-b', nargs='?',
-        default=datetime.combine(date.today(), time()),
+        default=datetime.combine(date.today(), time()) - timedelta(hours=12),
         help="Request all the reservation that began after the specified "
         "moment. Valid values are: a date in ISO format YYYY-mm-dd, "
         "a quoted date and time in ISO format 'YYY-mm-dd HH:MM' or an "
@@ -1134,16 +1217,26 @@ if __name__ == '__main__':
                 if len(busyList) == 0:
                     print("No reservation or job scheduled")
                 else:
+                    minF1 = max(len(formatDates(busy)[2]) for busy in busyList)
+                    minF2 = max(len(formatDates(busy)[4]) for busy in busyList)
+
+                    minO1 = max(len(formatDates(busy)[0])for busy in busyList)
+
+                    #minBeg = 2 + max(len(formatBeg(dateutil.parser.isoparse(busy['begin']))) for busy in busyList)
+                    #minEnd = 2 + max(len(formatEnd(dateutil.parser.isoparse(busy['end']))) for busy in busyList)
+                    #minDelta = 2 + max(len(formatDelta(dateutil.parser.isoparse(busy['end']) - dateutil.parser.isoparse(busy['begin']))) for busy in busyList) 
+
                     print("Testbed is busy:")
                     for busy in busyList:
-                        if not busy['is_owner']:
-                            ownership = ""
-                        else:
-                            ownership = " (" + \
-                                busy['desc'].replace('\n', ' ') + ")"
-                        print(f"since {busy['begin']} to {busy['end']} for "
-                              f"{busy['title']} on island "
-                              f"{busy['island']['name']}{ownership})")
+                        formatted = formatDates(busy)
+                        formatted = formatted[0].center(minO1) + formatted[1] + ' ' +  formatted[2].center(minF1) + ' ' +  formatted[3] + ' ' + formatted[4].center(minF2)
+
+                        colors = format_color(busy)
+
+                        print(f"{colors}{formatted}"
+                              f" on island "
+                              f"{busy['island']['name'].center(10)}"
+                              f"({busy['begin']} to {busy['end']})")
             exit(0)
 
         elif args.command == 'schedule':
@@ -1207,7 +1300,8 @@ if __name__ == '__main__':
                     print(f"Download test {id} to {args.dest_dir}")
                     fname, nBytes = tiot.download(id, args.dest_dir,
                                                   args.no_delete, args.unzip)
-                    print(f"Saved {nBytes} bytes in {fname}")
+                    formatted_bytes = format_size(nBytes)
+                    print(f"Saved {formatted_bytes} in {fname}")
                 except Exception:
                     pass
 

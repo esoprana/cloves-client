@@ -24,6 +24,36 @@ default_config = {
 
 import importlib.util
 
+def add_hooks(func, hooks, hooks_data):
+    def internal(*args, **kwargs):
+        data = copy.deepcopy(hooks_data)
+        data['inputs'] = (args, kwargs)
+
+        data['output'] = func(*args, **kwargs)
+
+        for hook in hooks:
+            hook = str(Path(hook).resolve())
+            try:
+                hook_module = None
+                try:
+                    from importlib.machinery import SourceFileLoader
+                    # importing the add module from the calculator package using the path
+                    module_handle = SourceFileLoader("hook_module", hook).load_module()
+                except NameError:
+                    print('Hook module not found')
+                else:
+                    module_handle.hook(**data)
+
+            except Exception as e:
+                print(f'Exception inside a hook module ({hook})')
+                print(e)
+            except:
+                pass
+
+        return data['output']
+
+    return internal
+
 class Formatter:
     @staticmethod
     def is_humanize_enabled():
@@ -1014,6 +1044,31 @@ if __name__ == '__main__':
                             "server certificate"
                             )
 
+
+    cli_parser.add_argument('--hook', dest='hook',
+                            type=str,
+                            nargs='+',
+                            default=[],
+                            help="call the main function of this file at the end of the schedule operation")
+
+    cli_parser.add_argument('--clear-hooks', dest='hook',
+                            action='append_const',
+                            const=None,
+                            help="call the main function of this file at the end of the schedule operation")
+
+    def parse_pairs(a: str):
+        if '=' not in a:
+            raise ValueError("Pairs of hook-data should be field=value")
+
+        return a.split('=', maxsplit=1)
+
+    cli_parser.add_argument('--hook-data', 
+                            dest='hook_data',
+                            type=parse_pairs,
+                            nargs='*',
+                            default=[],
+                            help="data passed to all the hooks")
+
     saveConfig = subparser.add_parser(
         'saveConfig',
         help="save configuration as default for user"
@@ -1069,11 +1124,6 @@ if __name__ == '__main__':
     )
     startGroup.add_argument('--now', action='store_true',
                             help="overwrite start_time fields with 'now'")
-
-    scheduleParser.add_argument('--hook', type=str,
-                                nargs='+',
-                                default=[],
-                                help="call the main function of this file at the end of the schedule operation")
 
     scheduleParser.add_argument('--duration', type=int,
                                 default=None,
@@ -1237,6 +1287,20 @@ if __name__ == '__main__':
         print(f"Destination directory '{args.dest_dir}' not found")
         exit(1)
 
+    # We use None as a signal to find clear the list of hooks, so we want to
+    # find the last None and delete every hook that comes before it
+
+    # First get the complete list of hooks
+    args.hook = [*config.get('hooks', {}).get(args.command,[]), *args.hook]
+    # Then if there is a None in the list we reverse it to find the last one, 
+    # we get the index in the original list (len - idx of reverse list), and
+    # then we use that to filter every hook that comes before it 
+    # (included the None)
+    if None in args.hook:
+        args.hook = args.hook[len(args.hook)-args.hook[::-1].index(None):]
+
+    args.hook_data = dict(args.hook_data)
+
     if args.command == 'schedule' and args.asap_after:
         m = re.match(r'(\d{4}-\d{2}-\d{2}\s+)?\d{2}:\d{2}', args.asap_after)
         if m is None:
@@ -1249,6 +1313,8 @@ if __name__ == '__main__':
         exit(1)
 
     with IoTTestbed(**config) as tiot:
+        tiot.schedule = add_hooks(tiot.schedule, args.hook, args.hook_data)
+        tiot.download = add_hooks(tiot.download, args.hook, args.hook_data)
 
         if args.command == 'calendar':
             try:
@@ -1280,24 +1346,6 @@ if __name__ == '__main__':
                     print("Submit job to testbed")
                     result = tiot.schedule(job)
                     print(f"result: {result}")
-                    
-                    for hook in args.hook:
-                        hook = str(Path(hook).resolve())
-                        try:
-                            hook_module = None
-                            try:
-                                from importlib.machinery import SourceFileLoader
-                                # importing the add module from the calculator package using the path
-                                module_handle = SourceFileLoader("hook_module", hook).load_module()
-                            except NameError:
-                                print('Hook module not found')
-                            else:
-                                module_handle.hook(result)
-
-                        except Exception as e:
-                            print(e)
-                        except:
-                            pass
 
         elif args.command == 'cancel':
             for jid in args.jobId:

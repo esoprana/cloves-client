@@ -3,6 +3,4 @@ chardet==3.0.4
 idna==2.9
 requests==2.23.0
 urllib3==1.25.8
-humanize==4.8.0
 python-dateutil==2.8.2
-colored==2.2.3

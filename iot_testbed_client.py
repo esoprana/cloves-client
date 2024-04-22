@@ -34,7 +34,6 @@ def add_hooks(func, hooks, hooks_data):
         for hook in hooks:
             hook = str(Path(hook).resolve())
             try:
-                hook_module = None
                 try:
                     from importlib.machinery import SourceFileLoader
                     # importing the add module from the calculator package using the path

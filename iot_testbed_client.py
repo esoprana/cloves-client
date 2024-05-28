@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import json
 import copy
 import re
@@ -60,7 +61,9 @@ class Formatter:
 
     @staticmethod
     def is_color_enabled():
-        return (importlib.util.find_spec('colored') is not None)
+        # Check that the colored library is available and check that stdout is a tty.
+        # If not do not enable colors
+        return (importlib.util.find_spec('colored') is not None) and sys.stdout.isatty()
 
     @staticmethod
     def format_time_span(begin: str|datetime, end: str|datetime):
@@ -1042,7 +1045,6 @@ if __name__ == '__main__':
                             help="indicate which CA certificate use to verify "
                             "server certificate"
                             )
-
 
     cli_parser.add_argument('--hook', dest='hook',
                             type=str,

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, date, time
 from pathlib import Path
 import warnings
 import itertools
+import pprint
 
 from requests import Session
 from requests.compat import urljoin
@@ -1070,11 +1071,19 @@ if __name__ == '__main__':
                             default=[],
                             help="data passed to all the hooks")
 
+    # Save config subcommand --------------------------------------------------
     saveConfig = subparser.add_parser(
         'saveConfig',
         help="save configuration as default for user"
     )
 
+    # Show config subcommand --------------------------------------------------
+    showConfig = subparser.add_parser(
+        'showConfig',
+        help="show the active configuration"
+    )
+
+    # Calendar subcommand --------------------------------------------------
     calendarParser = subparser.add_parser(
         'calendar',
         help='interrogate testbed to know when the testebd will used, by '
@@ -1087,7 +1096,7 @@ if __name__ == '__main__':
         "moment. Valid values are: a date in ISO format YYYY-mm-dd, "
         "a quoted date and time in ISO format 'YYY-mm-dd HH:MM' or an "
         "empty value for whenever. By default, when this option is "
-        "not used, is today at midnighth."
+        "not used, is yesterday at noon."
     )
     calendarParser.add_argument(
         '--end', '-e', nargs='?',
@@ -1136,7 +1145,7 @@ if __name__ == '__main__':
 
     # Cancel subcommand --------------------------------------------------
     cancelParser = subparser.add_parser('cancel')
-    cancelParser.add_argument('jobId', help="ids of jobs to download",
+    cancelParser.add_argument('jobId', help="ids of jobs to cancel",
                               type=int, nargs='+')
 
     # Download subcommand --------------------------------------------------
@@ -1150,7 +1159,7 @@ if __name__ == '__main__':
     downloadParser.add_argument(
         '--dest-dir',
         help="specify in which directory download files",
-        default='./'
+        default=None
     )
     downloadParser.add_argument(
         '--no-delete', action='store_false',
@@ -1231,12 +1240,38 @@ if __name__ == '__main__':
 
     args = cli_parser.parse_args()
 
-    configFile = Path.home().joinpath('.iottestbed.config.json')
-    if configFile.is_file():
+    CONFIG_FILE_NAME = '.iottestbed.config.json'
+
+    def get_config(configFile):
         with configFile.open() as fh:
-            config = {**default_config, **json.load(fh)}
-    else:
-        config = default_config
+            config = json.load(fh)
+
+        return config
+
+    # Get all parent paths from the current working directory (including this directory)
+    parents = [p for p in Path.cwd().parents]
+    parents = [Path.cwd(), *parents]
+
+    # Reverse the order of the directories 
+    # (we want parent folder first so that we can then overwrite their 
+    #  configurations with the configuration in the subdirectories)
+    parents = parents[::-1]
+
+    # Make sure there is at least the home folder (as lowest priority)
+    parents = [Path.home(), *parents]
+
+    # Find the paths in which there is an actual configuration
+    parents = [p.joinpath(CONFIG_FILE_NAME) for p in parents]
+    parents = [p for p in parents if p.is_file()]
+
+    # Get all the configurations
+    parents = [get_config(p) for p in parents]
+
+    # With as base defaults default_config, overwrite the config, giving highest 
+    # priority to the configurations to the directories closest to the cwd
+    config = {**default_config}
+    for p in parents:
+        config = {**config, **p}
 
     for k in ['server', 'cacert', 'token']:
         if hasattr(args, k) and getattr(args, k) is not None:
@@ -1277,6 +1312,11 @@ if __name__ == '__main__':
         configFile.chmod(0o700)
         exit(0)
 
+    if args.command == 'showConfig':
+        print('The current active config is:')
+        pprint.pprint(config)
+        exit(0)
+
     if args.command == 'validate':
         for tfile in args.jobFile:
             validate(tfile)
@@ -1284,9 +1324,16 @@ if __name__ == '__main__':
 
         exit(0)
 
-    if args.command == 'download' and not Path(args.dest_dir).is_dir():
-        print(f"Destination directory '{args.dest_dir}' not found")
-        exit(1)
+    if args.command == 'download':
+        if (args.dest_dir is None) and ('dest_dir' in config):
+            args.dest_dir = config['dest_dir']
+
+        if args.dest_dir is None:
+            args.dest_dir = './'
+
+        if not Path(args.dest_dir).is_dir():
+            print(f"Destination directory '{args.dest_dir}' not found")
+            exit(1)
 
     # We use None as a signal to find clear the list of hooks, so we want to
     # find the last None and delete every hook that comes before it

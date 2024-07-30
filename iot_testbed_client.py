@@ -9,6 +9,7 @@ from pathlib import Path
 import warnings
 import itertools
 import pprint
+import traceback
 
 from requests import Session
 from requests.compat import urljoin
@@ -18,6 +19,9 @@ import dateutil.parser
 
 import unittest
 
+import dataclasses
+import typing
+
 default_config = {
     "server": "https://research.iottestbed.disi.unitn.it",
     "cacert": Path(__file__).resolve().parent.joinpath(
@@ -25,6 +29,73 @@ default_config = {
 }
 
 import importlib.util
+
+ISLAND_LIST = ['DEPT', 'HALL-A', 'all']
+
+@dataclasses.dataclass
+class Config:
+    CONFIG_FILE_NAME = '.iottestbed.config.json'
+
+    server: str # Maybe it should be uri
+    cacert: str # Maybe it should be path
+    token: typing.Optional[str] = None
+
+    calendar_island: str = 'all'
+
+    hooks: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+
+    dest_dir: Path = Path('./')
+
+    @staticmethod
+    def load(args: dict[str, typing.Any], cwd_path: Path, home_path: Path, default_config: typing.Any) -> 'tuple[bool,Config]':
+
+        def get_config(configFile):
+            with configFile.open() as fh:
+                config = json.load(fh)
+
+            return config
+
+        # Get all parent paths from the current working directory (including this directory)
+        parents = [p for p in cwd_path.parents]
+        parents = [cwd_path, *parents]
+
+        # Reverse the order of the directories 
+        # (we want parent folder first so that we can then overwrite their 
+        #  configurations with the configuration in the subdirectories)
+        parents = parents[::-1]
+
+        # Make sure there is at least the home folder (as lowest priority)
+        parents = [home_path, *parents]
+
+        # Find the paths in which there is an actual configuration
+        parents = [p.joinpath(Config.CONFIG_FILE_NAME) for p in parents]
+        parents = [p for p in parents if p.is_file()]
+
+        try:
+            # Get all the configurations
+            parents = [get_config(p) for p in parents]
+        except json.JSONDecodeError as ex:
+            # If there is an error when loading the configuration, fallback 
+            # to the default configuration.
+            # In this way we are sure that we always have a working --help
+            print('Could not decode all json configurations. Falling back to default configuration')
+            print(ex)
+            print('') 
+            # TODO: This error message is pretty bad
+            return False, Config(**default_config)
+
+        # With as base defaults default_config, overwrite the config, giving highest 
+        # priority to the configurations to the directories closest to the cwd
+        config = {**default_config}
+        for p in parents:
+            config = {**config, **p}
+
+        # Use args if available
+        for k in ['server', 'cacert', 'token']:
+            if k in args and args[k] is not None:
+                config[k] = args[k]
+
+        return True, Config(**config)
 
 def add_hooks(func, hooks, hooks_data):
     def internal(*args, **kwargs):
@@ -49,7 +120,8 @@ def add_hooks(func, hooks, hooks_data):
                 print(f'Exception inside a hook module ({hook})')
                 print(e)
             except:
-                pass
+                print('Unexpected error:')
+                traceback.print_exc()
 
         return data['output']
 
@@ -119,24 +191,29 @@ class Formatter:
 
         from colored import Fore, Style
 
+        STYLES = {
+            'is_owner': Style.underline,
+            'completed': Fore.red,
+            'not_owner_or_downloaded': Style.dim
+        }
+
         begColor = []
-        
         begColor.append(Style.reset)
 
         if dateutil.parser.isoparse(busy['end']) < datetime.now().astimezone():
             if not (busy['is_owner'] and 'Completed' in busy['desc']):
-                begColor.append(Style.dim)
+                begColor.append(STYLES['not_owner_or_downloaded'])
 
         if busy['is_owner']:
-            begColor.append(Style.underline)
+            begColor.append(STYLES['is_owner'])
 
             if 'Completed' in busy['desc']:
-                begColor.append(Fore.red)
+                begColor.append(STYLES['completed'])
 
         return ''.join(begColor)
 
     @staticmethod
-    def format_calendar(busyList):
+    def format_calendar(busyList, show_island: bool = True):
         if len(busyList) == 0:
             print("No reservation or job scheduled")
             return 
@@ -158,6 +235,25 @@ class Formatter:
 
             return res
 
+        def print_fomatted_calendar_item(busy, show_island: bool):
+            print(f"{busy['color']}" # Color section
+                  f"{busy['desc'].center(minO1)}" # Description
+                  f"From " # Start of time span section
+                  f"{busy['time_span']['begin'].center(minF1)} " # Put the starting time
+                  f"{'for ' if 'delta' in busy['time_span'] else 'to  '}" # Put "for" if a time delta follows, otherwise "to"
+                  f"{busy['time_span'].get('delta', busy['time_span']['end']).center(minF2)}" # Put the time delta if we have it otherwise use the end time
+                  , end="")
+
+            if show_island:
+                print(
+                  f" on island "
+                  f"{busy['island_name'].center(minI1)}"
+                  , end="")
+                  
+            print(f" ({busy['begin']} to {busy['end']})", end="")
+
+            print("")
+
         busyList = list(map(format_calendar_item, busyList))
 
         minF1 = max(len(busy['time_span']['begin']) for busy in busyList)
@@ -169,15 +265,7 @@ class Formatter:
 
         print("Testbed is busy:")
         for busy in busyList:
-            print(f"{busy['color']}" # Color section
-                  f"{busy['desc'].center(minO1)}" # Description
-                  f"From " # Start of time span section
-                  f"{busy['time_span']['begin'].center(minF1)} " # Put the starting time
-                  f"{'for ' if 'delta' in busy['time_span'] else 'to  '}" # Put "for" if a time delta follows, otherwise "to"
-                  f"{busy['time_span'].get('delta', busy['time_span']['end']).center(minF2)}" # Put the time delta if we have it otherwise use the end time
-                  f" on island "
-                  f"{busy['island_name'].center(minI1)} "
-                  f"({busy['begin']} to {busy['end']})")
+            print_fomatted_calendar_item(busy, show_island=show_island)
 
 class ApiError(ValueError):
     def __init__(self, contextMessage, code, message):
@@ -793,6 +881,16 @@ class IoTTestbed:
         if not filename:
             filename = f"job_{jobId}.tar.gz"
 
+        cLen = r.headers.get('content-length')
+        if cLen is None:
+            raise Exception('Received data does not contain expected content-length')
+
+        cLen = int(cLen)
+
+        if cLen != len(r.content):
+            raise Exception("Received data is of different length than expected "
+                            f"(received: {len(r.content)} expected: {cLen})")
+
         fpath = destDir.joinpath(filename)
         count = fpath.write_bytes(r.content)
 
@@ -1034,6 +1132,8 @@ class TestParseReservationArgument(unittest.TestCase):
 
 if __name__ == '__main__':
 
+    success, config = Config.load( { }, Path.cwd(), Path.home(), default_config )
+
     import argparse
     cli_parser = argparse.ArgumentParser(
         description="Client script for testbed Iot"
@@ -1106,6 +1206,14 @@ if __name__ == '__main__':
         "quoted date and time in ISO format 'YYY-mm-dd HH:MM' or an empty "
         "value for whenever. By default, when this option is not used, is "
         "in 7 days at midnight."
+    )
+
+    calendarParser.add_argument(
+        'island',
+        choices=ISLAND_LIST,
+        nargs='?',
+        default=config.calendar_island, 
+        help="Specify to show a single or all islands"
     )
 
     # Validate subcommand -----------------------------------------------------
@@ -1240,42 +1348,19 @@ if __name__ == '__main__':
 
     args = cli_parser.parse_args()
 
-    CONFIG_FILE_NAME = '.iottestbed.config.json'
+    success, config = Config.load(
+        {
+            k: getattr(args, k) 
+            for k in ['server', 'cacert', 'token'] 
+            if hasattr(args, k) and getattr(args, k) is not None
+        },
+        Path.cwd(),
+        Path.home(),
+        default_config
+    )
 
-    def get_config(configFile):
-        with configFile.open() as fh:
-            config = json.load(fh)
-
-        return config
-
-    # Get all parent paths from the current working directory (including this directory)
-    parents = [p for p in Path.cwd().parents]
-    parents = [Path.cwd(), *parents]
-
-    # Reverse the order of the directories 
-    # (we want parent folder first so that we can then overwrite their 
-    #  configurations with the configuration in the subdirectories)
-    parents = parents[::-1]
-
-    # Make sure there is at least the home folder (as lowest priority)
-    parents = [Path.home(), *parents]
-
-    # Find the paths in which there is an actual configuration
-    parents = [p.joinpath(CONFIG_FILE_NAME) for p in parents]
-    parents = [p for p in parents if p.is_file()]
-
-    # Get all the configurations
-    parents = [get_config(p) for p in parents]
-
-    # With as base defaults default_config, overwrite the config, giving highest 
-    # priority to the configurations to the directories closest to the cwd
-    config = {**default_config}
-    for p in parents:
-        config = {**config, **p}
-
-    for k in ['server', 'cacert', 'token']:
-        if hasattr(args, k) and getattr(args, k) is not None:
-            config[k] = getattr(args, k)
+    if not success:
+        raise ValueError("Error in the configuration syntax or values")
 
     if args.command == 'calendar':
         if args.begin is not None and isinstance(args.begin, str):
@@ -1308,13 +1393,13 @@ if __name__ == '__main__':
 
     if args.command == 'saveConfig':
         with configFile.open('w') as fh:
-            json.dump(config, fh, default=str, indent=1)
+            json.dump(dict(config), fh, default=str, indent=1)
         configFile.chmod(0o700)
         exit(0)
 
     if args.command == 'showConfig':
         print('The current active config is:')
-        pprint.pprint(config)
+        pprint.pprint(dict(config))
         exit(0)
 
     if args.command == 'validate':
@@ -1325,11 +1410,8 @@ if __name__ == '__main__':
         exit(0)
 
     if args.command == 'download':
-        if (args.dest_dir is None) and ('dest_dir' in config):
-            args.dest_dir = config['dest_dir']
-
-        if args.dest_dir is None:
-            args.dest_dir = './'
+        if (args.dest_dir is None):
+            args.dest_dir = config.dest_dir
 
         if not Path(args.dest_dir).is_dir():
             print(f"Destination directory '{args.dest_dir}' not found")
@@ -1339,7 +1421,7 @@ if __name__ == '__main__':
     # find the last None and delete every hook that comes before it
 
     # First get the complete list of hooks
-    args.hook = [*config.get('hooks', {}).get(args.command,[]), *args.hook]
+    args.hook = [*config.hooks.get(args.command,[]), *args.hook]
     # Then if there is a None in the list we reverse it to find the last one, 
     # we get the index in the original list (len - idx of reverse list), and
     # then we use that to filter every hook that comes before it 
@@ -1356,11 +1438,11 @@ if __name__ == '__main__':
                   "form [YYYY-mm-dd] HH:MM")
             exit(1)
 
-    if 'token' not in config or config['token'] is None:
+    if config.token is None:
         print("Token is required to authenticate on testbed")
         exit(1)
 
-    with IoTTestbed(**config) as tiot:
+    with IoTTestbed(token=config.token, server=config.server, cacert=config.cacert) as tiot:
         tiot.schedule = add_hooks(tiot.schedule, args.hook, args.hook_data)
         tiot.download = add_hooks(tiot.download, args.hook, args.hook_data)
 
@@ -1370,7 +1452,10 @@ if __name__ == '__main__':
             except Exception:
                 raise
             else:
-                Formatter.format_calendar(busyList)
+                if args.island != 'all':
+                    busyList = [busy for busy in busyList if busy['island']['name'] == args.island]
+
+                Formatter.format_calendar(busyList, show_island=(args.island == 'all'))
 
             exit(0)
 
@@ -1419,8 +1504,9 @@ if __name__ == '__main__':
                                                   args.no_delete, args.unzip)
                     formatted_bytes = Formatter.format_size(nBytes)
                     print(f"Saved {formatted_bytes} in {fname}")
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f'Could not download the {id} job')
+                    print(ex)
 
         elif args.command == 'reservation':
             try:
